@@ -52,6 +52,14 @@ class ModbusCommWrapper:
             success = self._modbus_client.connect()
             
             if success:
+                # Set inter-character timeout for reliable multi-register reads
+                # This is needed for some devices/USB adapters that have gaps between bytes
+                try:
+                    if hasattr(self._modbus_client, 'socket') and self._modbus_client.socket:
+                        self._modbus_client.socket.inter_byte_timeout = 0.1
+                except Exception:
+                    pass  # Not critical if this fails
+                    
                 print(f"Connected via {self._backend.get_backend_name()}")
             
             return success
