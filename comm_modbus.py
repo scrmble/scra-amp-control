@@ -3,9 +3,18 @@ Modbus Communication Wrapper
 Integrates pymodbus with the communication abstraction layer
 """
 
+import logging
 from pymodbus.client import ModbusSerialClient
 from typing import Optional
 from comm_interface import CommInterface, CommBackend, CommManager
+
+logger = logging.getLogger('comm_modbus')
+
+# Detect pymodbus version for API compatibility
+import pymodbus
+_pymodbus_version = tuple(int(x) for x in pymodbus.__version__.split('.')[:2])
+_use_new_api = _pymodbus_version >= (3, 13)  # API changed in 3.13.0
+logger.debug(f"pymodbus version {pymodbus.__version__}, using {'new' if _use_new_api else 'legacy'} API")
 
 
 class ModbusCommWrapper:
@@ -49,18 +58,29 @@ class ModbusCommWrapper:
             )
             
             # Connect
+            logger.info(f"Connecting to {port} at {baudrate} baud...")
             success = self._modbus_client.connect()
             
             if success:
+                # Log pymodbus version and client info
+                import pymodbus
+                logger.info(f"pymodbus version: {pymodbus.__version__}")
+                logger.info(f"ModbusSerialClient connected, socket type: {type(self._modbus_client.socket).__name__ if hasattr(self._modbus_client, 'socket') else 'unknown'}")
+                
                 # Set inter-character timeout for reliable multi-register reads
                 # This is needed for some devices/USB adapters that have gaps between bytes
                 try:
                     if hasattr(self._modbus_client, 'socket') and self._modbus_client.socket:
                         self._modbus_client.socket.inter_byte_timeout = 0.1
-                except Exception:
-                    pass  # Not critical if this fails
+                        logger.info(f"Set inter_byte_timeout=0.1 on socket")
+                    else:
+                        logger.warning(f"Cannot set inter_byte_timeout: socket={getattr(self._modbus_client, 'socket', 'N/A')}")
+                except Exception as e:
+                    logger.warning(f"Failed to set inter_byte_timeout: {e}")
                     
                 print(f"Connected via {self._backend.get_backend_name()}")
+            else:
+                logger.error(f"Failed to connect to {port}")
             
             return success
             
@@ -110,25 +130,37 @@ class ModbusCommWrapper:
         """Read input registers"""
         if not self.is_connected():
             raise RuntimeError("Not connected")
-        return self._modbus_client.read_input_registers(address, count, slave=self._slave_id)
+        if _use_new_api:
+            return self._modbus_client.read_input_registers(address, count=count, device_id=self._slave_id)
+        else:
+            return self._modbus_client.read_input_registers(address, count, slave=self._slave_id)
     
     def read_holding_registers(self, address: int, count: int):
         """Read holding registers"""
         if not self.is_connected():
             raise RuntimeError("Not connected")
-        return self._modbus_client.read_holding_registers(address, count, slave=self._slave_id)
+        if _use_new_api:
+            return self._modbus_client.read_holding_registers(address, count=count, device_id=self._slave_id)
+        else:
+            return self._modbus_client.read_holding_registers(address, count, slave=self._slave_id)
     
     def write_register(self, address: int, value: int):
         """Write single register"""
         if not self.is_connected():
             raise RuntimeError("Not connected")
-        return self._modbus_client.write_register(address, value, slave=self._slave_id)
+        if _use_new_api:
+            return self._modbus_client.write_register(address, value, device_id=self._slave_id)
+        else:
+            return self._modbus_client.write_register(address, value, slave=self._slave_id)
     
     def write_registers(self, address: int, values: list):
         """Write multiple registers"""
         if not self.is_connected():
             raise RuntimeError("Not connected")
-        return self._modbus_client.write_registers(address, values, slave=self._slave_id)
+        if _use_new_api:
+            return self._modbus_client.write_registers(address, values, device_id=self._slave_id)
+        else:
+            return self._modbus_client.write_registers(address, values, slave=self._slave_id)
 
 
 def create_modbus_uart(port: str, baudrate: int = 115200, slave_id: int = 1) -> ModbusCommWrapper:

@@ -5,10 +5,14 @@ Simplified monitoring and control interface for GaN RF amplifier
 Uses power_amp_lib for all device communication
 """
 
+import argparse
 import tkinter as tk
 from tkinter import ttk, messagebox
 import threading
 import time
+import logging
+
+logger = logging.getLogger('power_amp_gui')
 
 from power_amp_lib import (
     PowerAmplifierController,
@@ -363,12 +367,16 @@ class PowerAmplifierUserGUI:
         consecutive_errors = 0
         device_online = False
         
+        logger.info("Monitor loop started")
+        
         while self.monitoring_active and self.controller.is_connected:
             try:
+                logger.debug("Polling device status...")
                 status = self.controller.get_status()
                 consecutive_errors = 0
                 
                 if not device_online:
+                    logger.info("Device came online")
                     self.root.after(0, lambda: self.status_label.config(
                         text="Device Online", foreground="green"))
                     device_online = True
@@ -378,7 +386,9 @@ class PowerAmplifierUserGUI:
                 
             except Exception as e:
                 consecutive_errors += 1
+                logger.error(f"Monitor loop error (#{consecutive_errors}): {type(e).__name__}: {e}")
                 if consecutive_errors >= 3 and device_online:
+                    logger.warning("Device went offline after 3 consecutive errors")
                     self.root.after(0, lambda: self.status_label.config(
                         text="Device Offline", foreground="orange"))
                     device_online = False
@@ -387,6 +397,8 @@ class PowerAmplifierUserGUI:
                 break
             
             time.sleep(0.5)
+        
+        logger.info("Monitor loop ended")
     
     def update_display(self, status: AmplifierStatus):
         """Update all display labels with status data"""
@@ -559,6 +571,15 @@ class PowerAmplifierUserGUI:
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Power Amplifier User GUI")
+    parser.add_argument("--verbose", "-v", action="store_true",
+                        help="Enable verbose debug logging")
+    args = parser.parse_args()
+    
+    if args.verbose:
+        from power_amp_lib import enable_verbose_logging
+        enable_verbose_logging()
+    
     root = tk.Tk()
     app = PowerAmplifierUserGUI(root)
     root.mainloop()

@@ -9,9 +9,29 @@ import argparse
 import sys
 import struct
 import time
+import logging
 from typing import Optional, Dict, Any, Tuple
 from dataclasses import dataclass
 from enum import Enum
+
+# Configure logging (disabled by default, enable with -v flag)
+logging.basicConfig(
+    level=logging.WARNING,
+    format='%(asctime)s.%(msecs)03d [%(levelname)s] %(name)s: %(message)s',
+    datefmt='%H:%M:%S'
+)
+logger = logging.getLogger('power_amp_lib')
+
+VERBOSE_LOGGING = False
+
+def enable_verbose_logging():
+    """Enable verbose (DEBUG) logging for all power amp modules"""
+    global VERBOSE_LOGGING
+    VERBOSE_LOGGING = True
+    logging.getLogger().setLevel(logging.DEBUG)
+    logging.getLogger('power_amp_lib').setLevel(logging.DEBUG)
+    logging.getLogger('power_amp_gui').setLevel(logging.DEBUG)
+    logging.getLogger('comm_modbus').setLevel(logging.DEBUG)
 
 # Communication imports
 from comm_modbus import create_modbus_rs485
@@ -259,18 +279,26 @@ class PowerAmplifierController:
         """Read input registers"""
         if not self.is_connected:
             raise ConnectionError("Not connected")
+        logger.debug(f"Reading {count} input registers at address {address}")
         result = self._modbus_client.read_input_registers(address, count)
+        logger.debug(f"Result type: {type(result).__name__}, isError: {result.isError() if hasattr(result, 'isError') else 'N/A'}")
         if result.isError():
-            raise CommunicationError(f"Failed to read input registers at {address}")
+            logger.error(f"Modbus error reading input registers at {address}: {result}")
+            raise CommunicationError(f"Failed to read input registers at {address}: {result}")
+        logger.debug(f"Got {len(result.registers)} registers: {result.registers[:5]}..." if len(result.registers) > 5 else f"Got registers: {result.registers}")
         return result.registers
     
     def _read_holding_registers(self, address: int, count: int):
         """Read holding registers"""
         if not self.is_connected:
             raise ConnectionError("Not connected")
+        logger.debug(f"Reading {count} holding registers at address {address}")
         result = self._modbus_client.read_holding_registers(address, count)
+        logger.debug(f"Result type: {type(result).__name__}, isError: {result.isError() if hasattr(result, 'isError') else 'N/A'}")
         if result.isError():
-            raise CommunicationError(f"Failed to read holding registers at {address}")
+            logger.error(f"Modbus error reading holding registers at {address}: {result}")
+            raise CommunicationError(f"Failed to read holding registers at {address}: {result}")
+        logger.debug(f"Got {len(result.registers)} registers")
         return result.registers
     
     def _modbus_registers_to_float(self, high: int, low: int) -> float:
@@ -579,6 +607,8 @@ Status Fields (shown with --status):
                         help="Serial port (e.g., COM5)")
     parser.add_argument("--baudrate", "-b", type=int, default=115200,
                         help="Baud rate (default: 115200)")
+    parser.add_argument("--verbose", "-v", action="store_true",
+                        help="Enable verbose debug logging")
     
     # Commands (mutually exclusive)
     group = parser.add_mutually_exclusive_group(required=True)
@@ -596,6 +626,9 @@ Status Fields (shown with --status):
                        help="Trigger MCU software reset")
     
     args = parser.parse_args()
+    
+    if args.verbose:
+        enable_verbose_logging()
     
     controller = PowerAmplifierController()
     
