@@ -63,6 +63,7 @@ REG_OCP_C3_COUNT_HIGH = 56
 REG_OCP_C3_COUNT_LOW = 57
 REG_OCP_C4_COUNT_HIGH = 58
 REG_OCP_C4_COUNT_LOW = 59
+REG_FIRMWARE_VERSION = 60  # Firmware version (read-only)
 
 # AGC Status Registers
 REG_AGC_IS_ENABLED = 50
@@ -86,10 +87,22 @@ REG_AGC_ENABLE = 123
 REG_AGC_POWER_GOAL_HIGH = 124
 REG_AGC_POWER_GOAL_LOW = 125
 
+# Configuration Control
+REG_SAVE_CONFIG = 130  # Write 1 to persist config to flash
+
 # Control Registers
 REG_RESET_OVERCURRENT = 138
 REG_RESET_OCP_COUNTERS = 139
 REG_MCU_SOFTWARE_RESET = 140
+
+# Frequency and device configuration (Holding)
+REG_RF_OPERATING_FREQ_HIGH = 170  # Operating frequency MHz (32-bit)
+REG_RF_OPERATING_FREQ_LOW = 171
+REG_MODBUS_ADDRESS = 172           # Modbus slave address (1-247)
+
+# Modbus address limits
+MODBUS_ADDRESS_MIN = 1
+MODBUS_ADDRESS_MAX = 247
 
 # Power goal limits
 POWER_GOAL_MIN_DBM = 30.0
@@ -440,6 +453,99 @@ class PowerAmplifierController:
             power_goal_dBm1000 -= 0x100000000
         return power_goal_dBm1000 / 1000.0
     
+    def get_firmware_version(self) -> int:
+        """
+        Read the device firmware version
+
+        Returns:
+            Firmware version number
+
+        Raises:
+            ConnectionError: If not connected
+            CommunicationError: If read fails
+        """
+        regs = self._read_input_registers(REG_FIRMWARE_VERSION, 1)
+        return regs[0]
+
+    def get_operating_frequency(self) -> int:
+        """
+        Read the RF operating frequency
+
+        Returns:
+            Operating frequency in MHz
+
+        Raises:
+            ConnectionError: If not connected
+            CommunicationError: If read fails
+        """
+        regs = self._read_holding_registers(REG_RF_OPERATING_FREQ_HIGH, 2)
+        return (regs[0] << 16) | regs[1]
+
+    def set_operating_frequency(self, freq_mhz: int) -> None:
+        """
+        Set the RF operating frequency
+
+        Args:
+            freq_mhz: Operating frequency in MHz
+
+        Raises:
+            ValidationError: If frequency is out of range
+            ConnectionError: If not connected
+            CommunicationError: If write fails
+        """
+        if freq_mhz < 0:
+            raise ValidationError("Operating frequency must be >= 0 MHz")
+        self._write_int32_registers(REG_RF_OPERATING_FREQ_HIGH, int(freq_mhz))
+
+    def get_modbus_address(self) -> int:
+        """
+        Read the device Modbus address
+
+        Returns:
+            Modbus slave address (1-247)
+
+        Raises:
+            ConnectionError: If not connected
+            CommunicationError: If read fails
+        """
+        regs = self._read_holding_registers(REG_MODBUS_ADDRESS, 1)
+        return regs[0]
+
+    def set_modbus_address(self, address: int) -> None:
+        """
+        Set the device Modbus address
+
+        The controller's active slave ID is updated to match so subsequent
+        communication continues to work. Call save_config() to persist the
+        change across a power cycle.
+
+        Args:
+            address: New Modbus slave address (1-247)
+
+        Raises:
+            ValidationError: If address is out of range
+            ConnectionError: If not connected
+            CommunicationError: If write fails
+        """
+        if address < MODBUS_ADDRESS_MIN or address > MODBUS_ADDRESS_MAX:
+            raise ValidationError(
+                f"Modbus address must be {MODBUS_ADDRESS_MIN}-{MODBUS_ADDRESS_MAX}"
+            )
+        self._write_register(REG_MODBUS_ADDRESS, int(address))
+        # Update the active slave ID so further comms use the new address
+        if self._modbus_client is not None:
+            self._modbus_client.slave_id = int(address)
+
+    def save_config(self) -> None:
+        """
+        Persist the current configuration to device flash
+
+        Raises:
+            ConnectionError: If not connected
+            CommunicationError: If write fails
+        """
+        self._write_register(REG_SAVE_CONFIG, 1)
+    
     def reset_overcurrent(self) -> None:
         """
         Reset overcurrent latches
@@ -551,6 +657,12 @@ Examples:
   %(prog)s --port COM5 --reset-ocp
   %(prog)s --port COM5 --reset-ocp-counters
   %(prog)s --port COM5 --mcu-reset
+  %(prog)s --port COM5 --fw-version
+  %(prog)s --port COM5 --get-freq
+  %(prog)s --port COM5 --set-freq 2450
+  %(prog)s --port COM5 --get-address
+  %(prog)s --port COM5 --set-address 2
+  %(prog)s --port COM5 --save-config
 
 Status Fields (shown with --status):
   Current & Voltage:
@@ -624,6 +736,18 @@ Status Fields (shown with --status):
                        help="Reset OCP event counters")
     group.add_argument("--mcu-reset", action="store_true",
                        help="Trigger MCU software reset")
+    group.add_argument("--fw-version", action="store_true",
+                       help="Read device firmware version")
+    group.add_argument("--get-freq", action="store_true",
+                       help="Get RF operating frequency (MHz)")
+    group.add_argument("--set-freq", type=int, metavar="MHZ",
+                       help="Set RF operating frequency (MHz)")
+    group.add_argument("--get-address", action="store_true",
+                       help="Get Modbus address")
+    group.add_argument("--set-address", type=int, metavar="ADDR",
+                       help="Set Modbus address (1-247)")
+    group.add_argument("--save-config", action="store_true",
+                       help="Persist configuration to device flash")
     
     args = parser.parse_args()
     
@@ -666,6 +790,31 @@ Status Fields (shown with --status):
             print("Sending MCU reset command...")
             controller.mcu_software_reset()
             print("MCU reset command sent. Device is rebooting.")
+            
+        elif args.fw_version:
+            version = controller.get_firmware_version()
+            print(f"Firmware version: v{version}")
+            
+        elif args.get_freq:
+            freq = controller.get_operating_frequency()
+            print(f"Operating frequency: {freq} MHz")
+            
+        elif args.set_freq is not None:
+            controller.set_operating_frequency(args.set_freq)
+            print(f"Operating frequency set to {args.set_freq} MHz")
+            
+        elif args.get_address:
+            address = controller.get_modbus_address()
+            print(f"Modbus address: {address}")
+            
+        elif args.set_address is not None:
+            controller.set_modbus_address(args.set_address)
+            print(f"Modbus address set to {args.set_address}. "
+                  f"Use --save-config to persist.")
+            
+        elif args.save_config:
+            controller.save_config()
+            print("Configuration saved to flash.")
             
     except ConnectionError as e:
         print(f"Connection error: {e}", file=sys.stderr)

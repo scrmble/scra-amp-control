@@ -83,6 +83,10 @@ class PowerAmplifierUserGUI:
         self.status_label = ttk.Label(comm_frame, text="Disconnected", foreground="gray")
         self.status_label.grid(row=0, column=5, padx=10)
         
+        ttk.Label(comm_frame, text="FW Version:").grid(row=0, column=6, sticky="w", padx=(20, 5))
+        self.fw_version_label = ttk.Label(comm_frame, text="---", foreground="gray")
+        self.fw_version_label.grid(row=0, column=7, padx=5)
+        
         # ===== Control Frame =====
         control_frame = ttk.LabelFrame(main_container, text="Control", padding=10)
         control_frame.pack(fill=tk.X, pady=(0, 10))
@@ -120,6 +124,51 @@ class PowerAmplifierUserGUI:
         
         ttk.Button(mcu_row, text="MCU Software Reset", 
                    command=self.mcu_software_reset).pack(side=tk.LEFT, padx=5)
+        
+        # ===== Device Configuration Frame =====
+        config_frame = ttk.LabelFrame(main_container, text="Device Configuration", padding=10)
+        config_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        # Operating frequency row
+        freq_row = ttk.Frame(config_frame)
+        freq_row.pack(fill=tk.X, pady=5)
+        
+        ttk.Label(freq_row, text="Operating Frequency (MHz):").pack(side=tk.LEFT)
+        self.operating_freq_var = tk.StringVar(value="---")
+        self.operating_freq_entry = ttk.Entry(freq_row, textvariable=self.operating_freq_var, width=10)
+        self.operating_freq_entry.pack(side=tk.LEFT, padx=10)
+        self.operating_freq_entry.bind('<Return>', lambda e: self.set_operating_frequency())
+        
+        ttk.Button(freq_row, text="Read", 
+                   command=self.read_operating_frequency).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(freq_row, text="Set", 
+                   command=self.set_operating_frequency).pack(side=tk.LEFT)
+        
+        # Modbus address row
+        addr_row = ttk.Frame(config_frame)
+        addr_row.pack(fill=tk.X, pady=5)
+        
+        ttk.Label(addr_row, text="Modbus Address:").pack(side=tk.LEFT)
+        self.modbus_addr_var = tk.StringVar(value="---")
+        self.modbus_addr_entry = ttk.Entry(addr_row, textvariable=self.modbus_addr_var, width=10)
+        self.modbus_addr_entry.pack(side=tk.LEFT, padx=10)
+        self.modbus_addr_entry.bind('<Return>', lambda e: self.set_modbus_address())
+        
+        ttk.Button(addr_row, text="Read", 
+                   command=self.read_modbus_address).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(addr_row, text="Set", 
+                   command=self.set_modbus_address).pack(side=tk.LEFT)
+        
+        ttk.Label(addr_row, text="(1-247)", foreground="gray").pack(side=tk.LEFT, padx=10)
+        
+        # Save config row
+        save_row = ttk.Frame(config_frame)
+        save_row.pack(fill=tk.X, pady=(10, 0))
+        
+        ttk.Button(save_row, text="Save Config", 
+                   command=self.save_config).pack(side=tk.LEFT, padx=5)
+        ttk.Label(save_row, text="(persist frequency / address / settings to flash)", 
+                  foreground="gray").pack(side=tk.LEFT, padx=5)
         
         # ===== Monitoring Frame =====
         monitor_frame = ttk.LabelFrame(main_container, text="System Status", padding=10)
@@ -334,6 +383,9 @@ class PowerAmplifierUserGUI:
             self.status_label.config(text="Connected", foreground="green")
             self.port_btn.config(text="Close Port")
             
+            # Populate device info fields
+            self.read_device_info()
+            
             # Start monitoring
             self.start_monitoring()
             
@@ -350,6 +402,9 @@ class PowerAmplifierUserGUI:
         self.controller.disconnect()
         self.status_label.config(text="Disconnected", foreground="gray")
         self.port_btn.config(text="Open Port")
+        self.fw_version_label.config(text="---", foreground="gray")
+        self.operating_freq_var.set("---")
+        self.modbus_addr_var.set("---")
     
     def start_monitoring(self):
         """Start the monitoring thread"""
@@ -568,6 +623,107 @@ class PowerAmplifierUserGUI:
                 messagebox.showinfo("MCU Reset", "MCU reset command sent. Device is rebooting.")
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to reset MCU: {e}")
+    
+    def read_device_info(self):
+        """Read firmware version, operating frequency and Modbus address on connect"""
+        try:
+            fw_version = self.controller.get_firmware_version()
+            self.fw_version_label.config(text=f"v{fw_version}", foreground="green")
+        except Exception as e:
+            self.fw_version_label.config(text="?", foreground="orange")
+            logger.warning(f"Failed to read firmware version: {e}")
+        
+        try:
+            freq = self.controller.get_operating_frequency()
+            self.operating_freq_var.set(str(freq))
+        except Exception as e:
+            logger.warning(f"Failed to read operating frequency: {e}")
+        
+        try:
+            addr = self.controller.get_modbus_address()
+            self.modbus_addr_var.set(str(addr))
+        except Exception as e:
+            logger.warning(f"Failed to read Modbus address: {e}")
+    
+    def read_operating_frequency(self):
+        """Read operating frequency from device"""
+        if not self.controller.is_connected:
+            messagebox.showerror("Error", "Not connected to device")
+            return
+        
+        try:
+            freq = self.controller.get_operating_frequency()
+            self.operating_freq_var.set(str(freq))
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to read operating frequency: {e}")
+    
+    def set_operating_frequency(self):
+        """Set operating frequency on device"""
+        if not self.controller.is_connected:
+            messagebox.showerror("Error", "Not connected to device")
+            return
+        
+        try:
+            freq = int(float(self.operating_freq_var.get()))
+        except ValueError:
+            messagebox.showerror("Error", "Invalid frequency value")
+            return
+        
+        try:
+            self.controller.set_operating_frequency(freq)
+            messagebox.showinfo("Success", 
+                f"Operating frequency set to {freq} MHz\n"
+                f"Use 'Save Config' to persist.")
+        except ValidationError as e:
+            messagebox.showerror("Error", str(e))
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to set operating frequency: {e}")
+    
+    def read_modbus_address(self):
+        """Read Modbus address from device"""
+        if not self.controller.is_connected:
+            messagebox.showerror("Error", "Not connected to device")
+            return
+        
+        try:
+            addr = self.controller.get_modbus_address()
+            self.modbus_addr_var.set(str(addr))
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to read Modbus address: {e}")
+    
+    def set_modbus_address(self):
+        """Set Modbus address on device"""
+        if not self.controller.is_connected:
+            messagebox.showerror("Error", "Not connected to device")
+            return
+        
+        try:
+            addr = int(self.modbus_addr_var.get())
+        except ValueError:
+            messagebox.showerror("Error", "Invalid address value")
+            return
+        
+        try:
+            self.controller.set_modbus_address(addr)
+            messagebox.showinfo("Success", 
+                f"Modbus address changed to {addr}\n"
+                f"Use 'Save Config' to persist.")
+        except ValidationError as e:
+            messagebox.showerror("Error", str(e))
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to set Modbus address: {e}")
+    
+    def save_config(self):
+        """Persist configuration to device flash"""
+        if not self.controller.is_connected:
+            messagebox.showerror("Error", "Not connected to device")
+            return
+        
+        try:
+            self.controller.save_config()
+            messagebox.showinfo("Success", "Configuration saved to flash")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save config: {e}")
 
 
 def main():
