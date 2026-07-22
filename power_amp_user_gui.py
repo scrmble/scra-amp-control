@@ -51,14 +51,56 @@ class PowerAmplifierUserGUI:
     def on_closing(self):
         """Clean up before closing"""
         self.monitoring_active = False
+        try:
+            self.canvas.unbind_all("<MouseWheel>")
+            self.canvas.unbind_all("<Button-4>")
+            self.canvas.unbind_all("<Button-5>")
+        except Exception:
+            pass
         self.controller.disconnect()
         self.root.destroy()
     
+    def _on_mousewheel(self, event):
+        """Scroll the canvas with the mouse wheel"""
+        if event.num == 4:            # Linux scroll up
+            self.canvas.yview_scroll(-1, "units")
+        elif event.num == 5:          # Linux scroll down
+            self.canvas.yview_scroll(1, "units")
+        else:                         # Windows / macOS
+            self.canvas.yview_scroll(int(-event.delta / 120), "units")
+    
     def create_widgets(self):
         """Create all GUI widgets"""
-        # Main container with padding
-        main_container = ttk.Frame(self.root, padding=10)
-        main_container.pack(fill=tk.BOTH, expand=True)
+        # Scrollable container: canvas + vertical scrollbar
+        outer = ttk.Frame(self.root)
+        outer.pack(fill=tk.BOTH, expand=True)
+        
+        self.canvas = tk.Canvas(outer, highlightthickness=0)
+        vscroll = ttk.Scrollbar(outer, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=vscroll.set)
+        
+        vscroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # Main container with padding, hosted inside the canvas
+        main_container = ttk.Frame(self.canvas, padding=10)
+        self.canvas_window = self.canvas.create_window((0, 0), window=main_container, anchor="nw")
+        
+        # Keep scrollregion in sync with content size
+        main_container.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        )
+        # Make inner frame track canvas width so widgets fill horizontally
+        self.canvas.bind(
+            "<Configure>",
+            lambda e: self.canvas.itemconfig(self.canvas_window, width=e.width)
+        )
+        
+        # Enable mousewheel scrolling
+        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+        self.canvas.bind_all("<Button-4>", self._on_mousewheel)
+        self.canvas.bind_all("<Button-5>", self._on_mousewheel)
         
         # ===== Communication Frame =====
         comm_frame = ttk.LabelFrame(main_container, text="Communication", padding=10)
