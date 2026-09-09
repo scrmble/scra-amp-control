@@ -411,7 +411,7 @@ class PowerAmplifierUserGUI:
         self.dissipated_label = ttk.Label(thermal_frame, text="--- W", font=("Arial", 12, "bold"))
         self.dissipated_label.grid(row=1, column=1, sticky="w", padx=10)
         
-ttk.Label(thermal_frame, text=f"(Temp < 50°C = LOW; Dissipated turns red within {PDISS_LIMIT_MARGIN_W:.0f}W of the Pdiss limit)",
+        ttk.Label(thermal_frame, text=f"(Temp < 50°C = LOW; Dissipated turns red within {PDISS_LIMIT_MARGIN_W:.0f}W of the Pdiss limit)",
                   foreground="gray", font=("Arial", 8)).grid(row=2, column=0, columnspan=2, sticky="w")
         
         # Gate Voltages section
@@ -919,8 +919,10 @@ ttk.Label(thermal_frame, text=f"(Temp < 50°C = LOW; Dissipated turns red within
                                      "into the bootloader.")
                 return
             try:
-                # mcu_software_reset() reboots the board and disconnects the port
-                self.controller.mcu_software_reset()
+                # Fire-and-forget reset: the board reboots into the bootloader
+                # and never ACKs, so nothing is read after this - just drop the
+                # port and let sendapp reopen it after a short delay.
+                self.controller.reboot_to_bootloader()
                 self._fw_log("Sent MCU software reset - rebooting into bootloader...")
                 self.stop_monitoring()
                 self.status_label.config(text="MCU Rebooting...", foreground="orange")
@@ -945,6 +947,9 @@ ttk.Label(thermal_frame, text=f"(Temp < 50°C = LOW; Dissipated turns red within
             sys.stdout = redirector
             ok = False
             try:
+                if reboot_first:
+                    print("Reset sent; waiting 2 s for the bootloader to come up...")
+                    time.sleep(2.0)
                 max_attempts = 4
                 for attempt in range(1, max_attempts + 1):
                     print(f"\n=== Upload attempt {attempt}/{max_attempts} ===")

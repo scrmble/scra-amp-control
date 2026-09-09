@@ -655,6 +655,22 @@ class PowerAmplifierController:
         time.sleep(0.5)
         self.disconnect()
 
+    def reboot_to_bootloader(self) -> None:
+        """Command the MCU to reset into the bootloader, then drop the port.
+
+        The board reboots immediately and never ACKs, so the reset is sent
+        fire-and-forget - no response is read after it. The caller should wait
+        ~2 s before reopening the port for the XMODEM uploader.
+        """
+        if not self.is_connected:
+            raise ConnectionError("Not connected")
+        try:
+            self._modbus_client.write_register_no_response(REG_MCU_SOFTWARE_RESET, 1)
+        except Exception:
+            pass  # link may drop mid-write as the MCU resets
+        finally:
+            self.disconnect()
+
     def set_sw_enable_allow(self, allow: bool) -> None:
         """Allow/deny software (Modbus) control of the amplifier enable. When
         allowed, the physical nEN pin is ignored and the amp follows the

@@ -153,6 +153,16 @@ class ModbusCommWrapper:
         else:
             return self._modbus_client.write_register(address, value, slave=self._slave_id)
     
+    def write_register_no_response(self, address: int, value: int):
+        """Fire-and-forget write (device won't ACK, e.g. reboot to bootloader)."""
+        if not self.is_connected():
+            raise RuntimeError("Not connected")
+        if _use_new_api:
+            return self._modbus_client.write_register(
+                address, value, device_id=self._slave_id, no_response_expected=True)
+        else:
+            return self._modbus_client.write_register(address, value, slave=self._slave_id)
+    
     def write_registers(self, address: int, values: list):
         """Write multiple registers"""
         if not self.is_connected():
