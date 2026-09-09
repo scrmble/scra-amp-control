@@ -16,13 +16,15 @@ Source code can be used in customer proprietary SW which works with Scramble UA 
 ## Dependencies
 
 - **Python 3.8+**
-- **pymodbus** >= 3.0.0 - Modbus RTU communication
-- **pyserial** >= 3.5 - Serial port access
+- **pymodbus** == 3.14.0 - Modbus RTU communication (exact version required)
+- **pyserial** == 3.5 - Serial port access (exact version required)
+
+The GUI verifies these exact versions at startup and refuses to run on any mismatch.
 
 ## Installation
 
 ```bash
-pip install pymodbus pyserial
+pip install pymodbus==3.14.0 pyserial==3.5
 ```
 
 Or using requirements.txt:

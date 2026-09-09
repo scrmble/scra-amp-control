@@ -63,6 +63,7 @@ REG_OCP_C3_COUNT_HIGH = 56
 REG_OCP_C3_COUNT_LOW = 57
 REG_OCP_C4_COUNT_HIGH = 58
 REG_OCP_C4_COUNT_LOW = 59
+REG_FIRMWARE_VERSION = 60  # Firmware version (read-only)
 
 # AGC Status Registers
 REG_AGC_IS_ENABLED = 50
@@ -86,10 +87,53 @@ REG_AGC_ENABLE = 123
 REG_AGC_POWER_GOAL_HIGH = 124
 REG_AGC_POWER_GOAL_LOW = 125
 
+# Configuration Control
+REG_SAVE_CONFIG = 130  # Write 1 to persist config to flash
+
 # Control Registers
 REG_RESET_OVERCURRENT = 138
 REG_RESET_OCP_COUNTERS = 139
 REG_MCU_SOFTWARE_RESET = 140
+
+# Frequency and device configuration (Holding)
+REG_RF_OPERATING_FREQ_HIGH = 170  # Operating frequency MHz (32-bit)
+REG_RF_OPERATING_FREQ_LOW = 171
+REG_MODBUS_ADDRESS = 172           # Modbus slave address (1-247)
+REG_RF_OPERATING_BW = 192          # Operating bandwidth MHz (0=point interp)
+
+# Modbus address limits
+MODBUS_ADDRESS_MIN = 1
+MODBUS_ADDRESS_MAX = 247
+
+# ---------------------------------------------------------------------------
+# Protection override (advanced) - requires prior protection unlock.
+# Calibration-level access codes/registers are intentionally NOT defined in
+# this user library so they cannot leak through the user GUI.
+# ---------------------------------------------------------------------------
+REG_ACCESS_CODE = 183            # Write unlock code; read = lock-state bitfield
+REG_WARRANTY_DIRTY = 185         # Read-only: tamper-evident bitfield
+REG_DISABLE_REFLECTED_PROT = 186
+REG_DISABLE_THROTTLE = 187
+REG_DISABLE_PDISS_LIMIT = 188
+REG_OVERTEMP_BOOST = 189
+
+# Software (Modbus) enable override - operational, no access unlock required
+REG_SW_EN_ALLOW = 190    # 1 = SW controls enable (physical nEN pin ignored)
+REG_SW_EN_COMMAND = 191  # 1 = enable amp, 0 = disable (effective only when allow=1)
+
+ACCESS_CODE_PROTECTION = 0xFA    # Unlock protection-override registers
+ACCESS_CODE_LOCK = 0x00          # Re-lock all access
+ACCESS_STATE_PROTECTION_BIT = 0x02
+
+# (key, register, UI label). True = protection disabled or boosted.
+PROTECTION_OVERRIDES = [
+    ("reflected", REG_DISABLE_REFLECTED_PROT, "Disable reflected-power (SWR) shutdown"),
+    ("throttle", REG_DISABLE_THROTTLE, "Disable thermal throttling"),
+    ("pdiss", REG_DISABLE_PDISS_LIMIT, "Disable dissipated-power limit"),
+    ("overtemp_boost", REG_OVERTEMP_BOOST, "Raise overtemp shutdown +10 degC"),
+]
+
+_PROTECTION_OVERRIDE_REGS = {key: reg for key, reg, _ in PROTECTION_OVERRIDES}
 
 # Power goal limits
 POWER_GOAL_MIN_DBM = 30.0
@@ -149,6 +193,10 @@ class AmplifierStatus:
     ovp_ok: bool = True
     uvp_ok: bool = True
     nen_enabled: bool = False
+    
+    # Software (Modbus) enable override
+    sw_en_allow: bool = False
+    sw_en_command: bool = False
     
     # Overcurrent status
     overcurrent_sys: bool = False
@@ -351,9 +399,9 @@ class PowerAmplifierController:
             # Temperature (IEEE 754 float)
             status.temperature_c = self._modbus_registers_to_float(regs[12], regs[13])
             
-            # Status flags
-            status.ovp_ok = bool(regs[16])
-            status.uvp_ok = bool(regs[17])
+            # Status flags (firmware reports 1=fault, 0=OK)
+            status.ovp_ok = not bool(regs[16])
+            status.uvp_ok = not bool(regs[17])
             status.nen_enabled = bool(regs[18])
             status.overcurrent_sys = bool(regs[19])
             status.overcurrent_c3 = bool(regs[20])
@@ -395,6 +443,11 @@ class PowerAmplifierController:
             status.gate_en_c3 = bool(regs_enables[4])
             status.gate_en_c4a = bool(regs_enables[5])
             status.gate_en_c4b = bool(regs_enables[6])
+            
+            # Software (Modbus) enable override state
+            regs_sw = self._read_holding_registers(REG_SW_EN_ALLOW, 2)
+            status.sw_en_allow = bool(regs_sw[0])
+            status.sw_en_command = bool(regs_sw[1])
             
             status.device_online = True
             
@@ -440,6 +493,129 @@ class PowerAmplifierController:
             power_goal_dBm1000 -= 0x100000000
         return power_goal_dBm1000 / 1000.0
     
+    def get_firmware_version(self) -> int:
+        """
+        Read the device firmware version
+
+        Returns:
+            Firmware version number
+
+        Raises:
+            ConnectionError: If not connected
+            CommunicationError: If read fails
+        """
+        regs = self._read_input_registers(REG_FIRMWARE_VERSION, 1)
+        return regs[0]
+
+    def get_operating_frequency(self) -> int:
+        """
+        Read the RF operating frequency
+
+        Returns:
+            Operating frequency in MHz
+
+        Raises:
+            ConnectionError: If not connected
+            CommunicationError: If read fails
+        """
+        regs = self._read_holding_registers(REG_RF_OPERATING_FREQ_HIGH, 2)
+        return (regs[0] << 16) | regs[1]
+
+    def set_operating_frequency(self, freq_mhz: int) -> None:
+        """
+        Set the RF operating frequency
+
+        Args:
+            freq_mhz: Operating frequency in MHz
+
+        Raises:
+            ValidationError: If frequency is out of range
+            ConnectionError: If not connected
+            CommunicationError: If write fails
+        """
+        if freq_mhz < 0:
+            raise ValidationError("Operating frequency must be >= 0 MHz")
+        self._write_int32_registers(REG_RF_OPERATING_FREQ_HIGH, int(freq_mhz))
+
+    def get_operating_bandwidth(self) -> int:
+        """
+        Read the RF operating bandwidth
+
+        Returns:
+            Operating bandwidth in MHz (0 = point interpolation)
+
+        Raises:
+            ConnectionError: If not connected
+            CommunicationError: If read fails
+        """
+        regs = self._read_holding_registers(REG_RF_OPERATING_BW, 1)
+        return regs[0]
+
+    def set_operating_bandwidth(self, bw_mhz: int) -> None:
+        """
+        Set the RF operating bandwidth
+
+        Args:
+            bw_mhz: Operating bandwidth in MHz (0 = point interpolation)
+
+        Raises:
+            ValidationError: If bandwidth is out of range
+            ConnectionError: If not connected
+            CommunicationError: If write fails
+        """
+        if bw_mhz < 0 or bw_mhz > 65535:
+            raise ValidationError("Operating bandwidth must be 0-65535 MHz")
+        self._write_register(REG_RF_OPERATING_BW, int(bw_mhz))
+
+    def get_modbus_address(self) -> int:
+        """
+        Read the device Modbus address
+
+        Returns:
+            Modbus slave address (1-247)
+
+        Raises:
+            ConnectionError: If not connected
+            CommunicationError: If read fails
+        """
+        regs = self._read_holding_registers(REG_MODBUS_ADDRESS, 1)
+        return regs[0]
+
+    def set_modbus_address(self, address: int) -> None:
+        """
+        Set the device Modbus address
+
+        The controller's active slave ID is updated to match so subsequent
+        communication continues to work. Call save_config() to persist the
+        change across a power cycle.
+
+        Args:
+            address: New Modbus slave address (1-247)
+
+        Raises:
+            ValidationError: If address is out of range
+            ConnectionError: If not connected
+            CommunicationError: If write fails
+        """
+        if address < MODBUS_ADDRESS_MIN or address > MODBUS_ADDRESS_MAX:
+            raise ValidationError(
+                f"Modbus address must be {MODBUS_ADDRESS_MIN}-{MODBUS_ADDRESS_MAX}"
+            )
+        self._write_register(REG_MODBUS_ADDRESS, int(address))
+        # Update the active slave ID so further comms use the new address
+        if self._modbus_client is not None:
+            self._modbus_client.slave_id = int(address)
+
+    def save_config(self) -> None:
+        """
+        Persist the current configuration to device flash
+
+        Raises:
+            ConnectionError: If not connected
+            CommunicationError: If write fails
+        """
+        self._write_register(REG_SAVE_CONFIG, 1)
+    
     def reset_overcurrent(self) -> None:
         """
         Reset overcurrent latches
@@ -473,6 +649,49 @@ class PowerAmplifierController:
         # Disconnect since device is rebooting
         time.sleep(0.5)
         self.disconnect()
+
+    def set_sw_enable_allow(self, allow: bool) -> None:
+        """Allow/deny software (Modbus) control of the amplifier enable. When
+        allowed, the physical nEN pin is ignored and the amp follows the
+        software command instead."""
+        self._write_register(REG_SW_EN_ALLOW, 1 if allow else 0)
+
+    def set_sw_enable(self, enable: bool) -> None:
+        """Enable/disable the amplifier via software. Firmware ignores this
+        unless set_sw_enable_allow(True) was issued first."""
+        self._write_register(REG_SW_EN_COMMAND, 1 if enable else 0)
+
+    def unlock_protection(self) -> None:
+        """Unlock the protection-override registers (volatile; cleared on save/reboot)."""
+        self._write_register(REG_ACCESS_CODE, ACCESS_CODE_PROTECTION)
+
+    def lock_access(self) -> None:
+        """Re-lock all access levels."""
+        self._write_register(REG_ACCESS_CODE, ACCESS_CODE_LOCK)
+
+    def is_protection_unlocked(self) -> bool:
+        """Return True if protection-override writes are currently unlocked."""
+        regs = self._read_holding_registers(REG_ACCESS_CODE, 1)
+        return bool(regs[0] & ACCESS_STATE_PROTECTION_BIT)
+
+    def set_protection_override(self, key: str, active: bool) -> None:
+        """Enable/disable one protection override. Requires prior unlock_protection()."""
+        if key not in _PROTECTION_OVERRIDE_REGS:
+            raise ValidationError(f"Unknown protection override: {key}")
+        self._write_register(_PROTECTION_OVERRIDE_REGS[key], 1 if active else 0)
+
+    def get_protection_overrides(self) -> Dict[str, bool]:
+        """Read the current state of every protection override."""
+        state: Dict[str, bool] = {}
+        for key, reg in _PROTECTION_OVERRIDE_REGS.items():
+            regs = self._read_holding_registers(reg, 1)
+            state[key] = bool(regs[0])
+        return state
+
+    def get_warranty_dirty(self) -> int:
+        """Read the tamper-evident warranty bitfield (nonzero = a protection was disabled)."""
+        regs = self._read_holding_registers(REG_WARRANTY_DIRTY, 1)
+        return regs[0]
 
 
 def format_status(status: AmplifierStatus) -> str:
@@ -551,6 +770,12 @@ Examples:
   %(prog)s --port COM5 --reset-ocp
   %(prog)s --port COM5 --reset-ocp-counters
   %(prog)s --port COM5 --mcu-reset
+  %(prog)s --port COM5 --fw-version
+  %(prog)s --port COM5 --get-freq
+  %(prog)s --port COM5 --set-freq 2450
+  %(prog)s --port COM5 --get-address
+  %(prog)s --port COM5 --set-address 2
+  %(prog)s --port COM5 --save-config
 
 Status Fields (shown with --status):
   Current & Voltage:
@@ -624,6 +849,18 @@ Status Fields (shown with --status):
                        help="Reset OCP event counters")
     group.add_argument("--mcu-reset", action="store_true",
                        help="Trigger MCU software reset")
+    group.add_argument("--fw-version", action="store_true",
+                       help="Read device firmware version")
+    group.add_argument("--get-freq", action="store_true",
+                       help="Get RF operating frequency (MHz)")
+    group.add_argument("--set-freq", type=int, metavar="MHZ",
+                       help="Set RF operating frequency (MHz)")
+    group.add_argument("--get-address", action="store_true",
+                       help="Get Modbus address")
+    group.add_argument("--set-address", type=int, metavar="ADDR",
+                       help="Set Modbus address (1-247)")
+    group.add_argument("--save-config", action="store_true",
+                       help="Persist configuration to device flash")
     
     args = parser.parse_args()
     
@@ -666,6 +903,31 @@ Status Fields (shown with --status):
             print("Sending MCU reset command...")
             controller.mcu_software_reset()
             print("MCU reset command sent. Device is rebooting.")
+            
+        elif args.fw_version:
+            version = controller.get_firmware_version()
+            print(f"Firmware version: v{version}")
+            
+        elif args.get_freq:
+            freq = controller.get_operating_frequency()
+            print(f"Operating frequency: {freq} MHz")
+            
+        elif args.set_freq is not None:
+            controller.set_operating_frequency(args.set_freq)
+            print(f"Operating frequency set to {args.set_freq} MHz")
+            
+        elif args.get_address:
+            address = controller.get_modbus_address()
+            print(f"Modbus address: {address}")
+            
+        elif args.set_address is not None:
+            controller.set_modbus_address(args.set_address)
+            print(f"Modbus address set to {args.set_address}. "
+                  f"Use --save-config to persist.")
+            
+        elif args.save_config:
+            controller.save_config()
+            print("Configuration saved to flash.")
             
     except ConnectionError as e:
         print(f"Connection error: {e}", file=sys.stderr)
