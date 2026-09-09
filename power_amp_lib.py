@@ -86,6 +86,8 @@ REG_GATE_EN_C4B = 121
 REG_AGC_ENABLE = 123
 REG_AGC_POWER_GOAL_HIGH = 124
 REG_AGC_POWER_GOAL_LOW = 125
+REG_AGC_MAX_PDISS_HIGH = 126        # AGC max dissipated power (mW, uint32_t high word)
+REG_AGC_MAX_PDISS_LOW = 127         # AGC max dissipated power (mW, uint32_t low word)
 
 # Configuration Control
 REG_SAVE_CONFIG = 130  # Write 1 to persist config to flash
@@ -139,8 +141,8 @@ _PROTECTION_OVERRIDE_REGS = {key: reg for key, reg, _ in PROTECTION_OVERRIDES}
 POWER_GOAL_MIN_DBM = 30.0
 POWER_GOAL_MAX_DBM = 52.4  # User cap
 
-# Dissipated power warning threshold
-DISSIPATED_POWER_WARNING_W = 180.0
+# Dissipated power is flagged when within this margin of the device Pdiss limit
+PDISS_LIMIT_MARGIN_W = 5.0
 
 
 class PowerAmpError(Exception):
@@ -182,7 +184,7 @@ class AmplifierStatus:
     
     # Stage 4 dissipated power
     dissipated_power_w: float = 0.0
-    dissipated_power_warning: bool = False
+    max_dissipated_power_w: float = 0.0
     
     # Gate voltages
     gate_c3_v: float = 0.0
@@ -413,7 +415,10 @@ class PowerAmplifierController:
             if dissipated_mW & 0x80000000:
                 dissipated_mW -= 0x100000000
             status.dissipated_power_w = dissipated_mW / 1000.0
-            status.dissipated_power_warning = status.dissipated_power_w > DISSIPATED_POWER_WARNING_W
+
+            # Read configured Pdiss limit (holding regs, mW uint32)
+            regs_limit = self._read_holding_registers(REG_AGC_MAX_PDISS_HIGH, 2)
+            status.max_dissipated_power_w = ((regs_limit[0] << 16) | regs_limit[1]) / 1000.0
             
             # Read OCP counters
             regs_ocp = self._read_input_registers(REG_OCP_C3_COUNT_HIGH, 4)
@@ -717,8 +722,10 @@ def format_status(status: AmplifierStatus) -> str:
     
     lines.append("--- Thermal ---")
     lines.append(f"Temperature:     {status.temperature_c:.1f} °C")
-    warning = " [WARNING!]" if status.dissipated_power_warning else ""
-    lines.append(f"Dissipated Power: {status.dissipated_power_w:.1f} W{warning}")
+    near_limit = (status.max_dissipated_power_w > 0 and
+                  status.dissipated_power_w >= status.max_dissipated_power_w - PDISS_LIMIT_MARGIN_W)
+    warning = " [WARNING!]" if near_limit else ""
+    lines.append(f"Dissipated Power: {status.dissipated_power_w:.1f} W (limit {status.max_dissipated_power_w:.0f} W){warning}")
     lines.append("")
     
     lines.append("--- Gate Voltages ---")

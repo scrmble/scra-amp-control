@@ -39,7 +39,7 @@ from power_amp_lib import (
     ValidationError,
     POWER_GOAL_MIN_DBM,
     POWER_GOAL_MAX_DBM,
-    DISSIPATED_POWER_WARNING_W,
+    PDISS_LIMIT_MARGIN_W,
     PROTECTION_OVERRIDES
 )
 
@@ -411,7 +411,7 @@ class PowerAmplifierUserGUI:
         self.dissipated_label = ttk.Label(thermal_frame, text="--- W", font=("Arial", 12, "bold"))
         self.dissipated_label.grid(row=1, column=1, sticky="w", padx=10)
         
-        ttk.Label(thermal_frame, text=f"(Temp < 50°C = LOW, Dissipated > {DISSIPATED_POWER_WARNING_W}W = Warning)", 
+ttk.Label(thermal_frame, text=f"(Temp < 50°C = LOW; Dissipated turns red within {PDISS_LIMIT_MARGIN_W:.0f}W of the Pdiss limit)",
                   foreground="gray", font=("Arial", 8)).grid(row=2, column=0, columnspan=2, sticky="w")
         
         # Gate Voltages section
@@ -668,9 +668,10 @@ class PowerAmplifierUserGUI:
         else:
             self.temp_label.config(text=f"{status.temperature_c:.1f} °C")
         
-        # Dissipated power with warning coloring
+        # Dissipated power: red when within PDISS_LIMIT_MARGIN_W of the device Pdiss limit
         self.dissipated_label.config(text=f"{status.dissipated_power_w:.1f} W")
-        if status.dissipated_power_warning:
+        if status.max_dissipated_power_w > 0 and \
+                status.dissipated_power_w >= status.max_dissipated_power_w - PDISS_LIMIT_MARGIN_W:
             self.dissipated_label.config(foreground="red")
         else:
             self.dissipated_label.config(foreground="black")
