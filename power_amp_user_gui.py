@@ -23,14 +23,6 @@ REQUIRED_VERSIONS = {
     "pyserial": "3.5",
 }
 
-# Access-phrase gate for the Protection Overrides tab. This is a warranty/
-# foot-gun guard, not a security control.
-_OVERRIDE_UNLOCK_PHRASE = "NoWarranty"
-
-
-def _override_phrase_ok(entered: str) -> bool:
-    return entered == _OVERRIDE_UNLOCK_PHRASE
-
 from power_amp_lib import (
     PowerAmplifierController,
     AmplifierStatus,
@@ -494,14 +486,18 @@ class PowerAmplifierUserGUI:
         ttk.Label(agc_frame, text="Temp Throttling:").grid(row=1, column=0, sticky="w")
         self.agc_throttle_label = ttk.Label(agc_frame, text="---")
         self.agc_throttle_label.grid(row=1, column=1, sticky="w", padx=10)
+
+        ttk.Label(agc_frame, text="Power Throttling:").grid(row=2, column=0, sticky="w")
+        self.agc_pdiss_label = ttk.Label(agc_frame, text="---")
+        self.agc_pdiss_label.grid(row=2, column=1, sticky="w", padx=10)
         
-        ttk.Label(agc_frame, text="Overtemp Error:").grid(row=2, column=0, sticky="w")
+        ttk.Label(agc_frame, text="Overtemp Error:").grid(row=3, column=0, sticky="w")
         self.agc_overtemp_label = ttk.Label(agc_frame, text="---")
-        self.agc_overtemp_label.grid(row=2, column=1, sticky="w", padx=10)
+        self.agc_overtemp_label.grid(row=3, column=1, sticky="w", padx=10)
         
-        ttk.Label(agc_frame, text="Bad SWR:").grid(row=3, column=0, sticky="w")
+        ttk.Label(agc_frame, text="Bad SWR:").grid(row=4, column=0, sticky="w")
         self.agc_swr_label = ttk.Label(agc_frame, text="---")
-        self.agc_swr_label.grid(row=3, column=1, sticky="w", padx=10)
+        self.agc_swr_label.grid(row=4, column=1, sticky="w", padx=10)
         
         # Power Enables section (read-only)
         power_en_frame = ttk.LabelFrame(right_col, text="Power Enables", padding=10)
@@ -556,6 +552,8 @@ class PowerAmplifierUserGUI:
             
             self.status_label.config(text="Connected", foreground="green")
             self.port_btn.config(text="Close Port")
+            if hasattr(self, 'prot_unlock_chk'):
+                self.prot_unlock_chk.config(state="normal")
             
             # Populate device info fields
             self.read_device_info()
@@ -582,6 +580,7 @@ class PowerAmplifierUserGUI:
         self.modbus_addr_var.set("---")
         # Protection overrides are volatile; reset the UI on disconnect
         self.prot_unlock_var.set(False)
+        self.prot_unlock_chk.config(state="disabled")
         self._set_protection_controls_enabled(False)
         for var in self.prot_check_vars.values():
             var.set(False)
@@ -720,6 +719,9 @@ class PowerAmplifierUserGUI:
         self.agc_throttle_label.config(
             text="Active" if status.agc_temp_throttling else "Inactive",
             foreground="orange" if status.agc_temp_throttling else "green")
+        self.agc_pdiss_label.config(
+            text="Active" if status.agc_pdiss_limiting else "Inactive",
+            foreground="orange" if status.agc_pdiss_limiting else "green")
         self.agc_overtemp_label.config(
             text="FAULT" if status.agc_overtemp_error else "OK",
             foreground="red" if status.agc_overtemp_error else "green")
@@ -1124,10 +1126,8 @@ class PowerAmplifierUserGUI:
             chk.config(state=state)
 
     def _build_protection_tab(self, parent):
-        """Build the Protection Overrides tab. Everything stays greyed out until
-        the operator types the access phrase, then the device-unlock checkbox
-        becomes available (which in turn enables the individual overrides)."""
-        self.override_tab_unlocked = False
+        """Build the Protection Overrides tab without a user-password gate."""
+        self.override_tab_unlocked = True
 
         warning = ttk.Label(
             parent,
@@ -1136,20 +1136,6 @@ class PowerAmplifierUserGUI:
                   "override is recorded permanently in the device."),
             foreground="#b00000", wraplength=620, justify="left")
         warning.pack(anchor="w", pady=(0, 10))
-
-        gate_frame = ttk.LabelFrame(parent, text="Access", padding=10)
-        gate_frame.pack(fill=tk.X, pady=(0, 10))
-        ttk.Label(gate_frame, text="Access phrase:").pack(side=tk.LEFT)
-        self.override_phrase_var = tk.StringVar()
-        self.override_phrase_entry = ttk.Entry(
-            gate_frame, textvariable=self.override_phrase_var, show="*", width=22)
-        self.override_phrase_entry.pack(side=tk.LEFT, padx=10)
-        self.override_phrase_entry.bind('<Return>', lambda e: self.unlock_override_tab())
-        self.override_unlock_btn = ttk.Button(
-            gate_frame, text="Unlock", command=self.unlock_override_tab)
-        self.override_unlock_btn.pack(side=tk.LEFT, padx=5)
-        self.override_gate_label = ttk.Label(gate_frame, text="Locked", foreground="gray")
-        self.override_gate_label.pack(side=tk.LEFT, padx=10)
 
         prot_frame = ttk.LabelFrame(parent, text="Protection Override (Advanced)", padding=10)
         prot_frame.pack(fill=tk.X, pady=(0, 10))
@@ -1175,18 +1161,6 @@ class PowerAmplifierUserGUI:
             chk.pack(anchor="w", padx=20)
             self.prot_check_vars[key] = var
             self.prot_check_widgets[key] = chk
-
-    def unlock_override_tab(self):
-        """Verify the access phrase and, if correct, enable the device-unlock control."""
-        if _override_phrase_ok(self.override_phrase_var.get()):
-            self.override_tab_unlocked = True
-            self.prot_unlock_chk.config(state="normal")
-            self.override_gate_label.config(text="Unlocked", foreground="#008000")
-            self.override_unlock_btn.config(state="disabled")
-            self.override_phrase_entry.config(state="disabled")
-        else:
-            self.override_gate_label.config(text="Incorrect phrase", foreground="#b00000")
-            self.override_phrase_var.set("")
 
     def toggle_protection_unlock(self):
         """Enter/leave protection-override mode."""

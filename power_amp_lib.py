@@ -72,6 +72,7 @@ REG_AGC_OVERTEMP_ERROR = 52
 REG_AGC_BAD_SWR = 53
 REG_AGC_INTEGRAL_ERROR_HIGH = 54
 REG_AGC_INTEGRAL_ERROR_LOW = 55
+REG_AGC_PDISS_LIMITING = 66  # Dedicated power-throttling bit, exposed from FW v31+
 
 # Power/Gate Enable Registers (Holding)
 REG_POWER_EN_C1 = 115
@@ -141,8 +142,27 @@ _PROTECTION_OVERRIDE_REGS = {key: reg for key, reg, _ in PROTECTION_OVERRIDES}
 POWER_GOAL_MIN_DBM = 30.0
 POWER_GOAL_MAX_DBM = 52.4  # User cap
 
+# AGC firmware bit for exposed Pdiss limiting appeared in v31.
+# Older firmware must use the fallback 3 W heuristic instead.
+AGC_PDISS_LIMITING_FW_VERSION = 31
+AGC_PDISS_LIMIT_MARGIN_W = 3.0
+
 # Dissipated power is flagged when within this margin of the device Pdiss limit
 PDISS_LIMIT_MARGIN_W = 5.0
+
+
+def supports_agc_pdiss_limit_bit(firmware_version: int) -> bool:
+    """Return True when the firmware exposes the dedicated AGC Pdiss-limiting bit."""
+    return firmware_version >= AGC_PDISS_LIMITING_FW_VERSION
+
+
+def is_power_throttling(dissipated_power_w: float,
+                       max_dissipated_power_w: float,
+                       margin_w: float = AGC_PDISS_LIMIT_MARGIN_W) -> bool:
+    """Return True when dissipated power is within `margin_w` W of the Pdiss limit."""
+    if max_dissipated_power_w <= 0:
+        return False
+    return dissipated_power_w >= (max_dissipated_power_w - margin_w)
 
 
 class PowerAmpError(Exception):
@@ -212,6 +232,7 @@ class AmplifierStatus:
     # AGC status
     agc_enabled: bool = False
     agc_temp_throttling: bool = False
+    agc_pdiss_limiting: bool = False
     agc_overtemp_error: bool = False
     agc_bad_swr: bool = False
     agc_limit_dbm: float = 0.0
@@ -431,6 +452,17 @@ class PowerAmplifierController:
             status.agc_temp_throttling = bool(regs_agc[1])
             status.agc_overtemp_error = bool(regs_agc[2])
             status.agc_bad_swr = bool(regs_agc[3])
+
+            fw_version = self.get_firmware_version()
+            if supports_agc_pdiss_limit_bit(fw_version):
+                regs_agc_pdiss = self._read_input_registers(REG_AGC_PDISS_LIMITING, 1)
+                status.agc_pdiss_limiting = bool(regs_agc_pdiss[0])
+            else:
+                status.agc_pdiss_limiting = is_power_throttling(
+                    status.dissipated_power_w,
+                    status.max_dissipated_power_w,
+                    margin_w=AGC_PDISS_LIMIT_MARGIN_W,
+                )
             
             # Read AGC power goal from holding registers
             regs_agc_ctrl = self._read_holding_registers(REG_AGC_ENABLE, 3)
