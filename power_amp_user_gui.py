@@ -544,13 +544,20 @@ class PowerAmplifierUserGUI:
     
     def open_port(self):
         """Open serial port and start monitoring"""
+        # Grey out the button while connecting so it cannot be clicked again
+        # until the port is open or all retry/timeout attempts have finished.
+        self.port_btn.config(state="disabled")
+        self.root.update_idletasks()
         try:
             port = self.port_var.get()
             baudrate = int(self.baudrate_var.get())
             
             self.controller.connect(port, baudrate)
             
-            self.status_label.config(text="Connected", foreground="green")
+            # Port handle is open, but the device has not answered yet. The
+            # monitor loop promotes this to "Device Online" on first reply.
+            self.status_label.config(text="Port Open - Device Not Connected",
+                                     foreground="orange")
             self.port_btn.config(text="Close Port")
             if hasattr(self, 'prot_unlock_chk'):
                 self.prot_unlock_chk.config(state="normal")
@@ -567,6 +574,8 @@ class PowerAmplifierUserGUI:
         except Exception as e:
             messagebox.showerror("Error", f"Failed to open port: {e}")
             self.status_label.config(text="Disconnected", foreground="gray")
+        finally:
+            self.port_btn.config(state="normal")
     
     def close_port(self):
         """Close serial port and stop monitoring"""
@@ -621,11 +630,16 @@ class PowerAmplifierUserGUI:
             except Exception as e:
                 consecutive_errors += 1
                 logger.error(f"Monitor loop error (#{consecutive_errors}): {type(e).__name__}: {e}")
-                if consecutive_errors >= 3 and device_online:
-                    logger.warning("Device went offline after 3 consecutive errors")
-                    self.root.after(0, lambda: self.status_label.config(
-                        text="Device Offline", foreground="orange"))
-                    device_online = False
+                if consecutive_errors >= 3:
+                    if device_online:
+                        logger.warning("Device went offline after 3 consecutive errors")
+                        self.root.after(0, lambda: self.status_label.config(
+                            text="Device Offline", foreground="orange"))
+                        device_online = False
+                    else:
+                        # Port opened but no device ever answered.
+                        self.root.after(0, lambda: self.status_label.config(
+                            text="Port Open - Device Not Connected", foreground="orange"))
             
             if not self.monitoring_active:
                 break
@@ -1212,18 +1226,36 @@ class PowerAmplifierUserGUI:
             messagebox.showerror("Error", f"Failed to set override: {e}")
 
 
-def check_required_versions():
-    """Verify exact dependency versions, or refuse to start."""
+def get_installed_version(pkg):
+    """Return the installed version of a dependency.
+
+    Falls back to the module's own version attribute when distribution
+    metadata is unavailable (e.g. a PyInstaller build without dist-info).
+    """
     try:
         from importlib.metadata import version, PackageNotFoundError
     except ImportError:  # Python < 3.8 fallback
         from importlib_metadata import version, PackageNotFoundError
 
+    try:
+        return version(pkg)
+    except PackageNotFoundError:
+        if pkg == "pymodbus":
+            import pymodbus
+            return pymodbus.__version__
+        if pkg == "pyserial":
+            import serial
+            return serial.VERSION
+        raise
+
+
+def check_required_versions():
+    """Verify exact dependency versions, or refuse to start."""
     problems = []
     for pkg, required in REQUIRED_VERSIONS.items():
         try:
-            installed = version(pkg)
-        except PackageNotFoundError:
+            installed = get_installed_version(pkg)
+        except Exception:
             problems.append(f"{pkg}: not installed (require {required})")
             continue
         if installed != required:
