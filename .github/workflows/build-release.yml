@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -29,8 +30,9 @@ jobs:
 
       - name: Build executable
         # --windowed: Creates a GUI application without console window
+        # --copy-metadata: Bundles dist-info so importlib.metadata version checks work in the onefile exe
         run: |
-          pyinstaller --onefile --windowed --name "PowerAmplifierControl" power_amp_user_gui.py
+          pyinstaller --onefile --windowed --name "PowerAmplifierControl" --copy-metadata pymodbus --copy-metadata pyserial power_amp_user_gui.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -39,6 +41,7 @@ jobs:
           path: dist/PowerAmplifierControl.exe
 
       - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: dist/PowerAmplifierControl.exe
